@@ -5,7 +5,13 @@
       "type": "python",
       "request": "launch",
       "module": "script.make_sdxl_latent_dataset",
-      "justMyCode": false
+      "justMyCode": false,
+      "args": [
+        "--in-dir", "/sdb/ml-data/artbench/artbench-10-imagefolder-split/train",
+        "--batch-size", "4",
+        "--compile",
+        "--use-ollin-vae"
+      ]
     }
   ]
 }
