@@ -1,0 +1,11 @@
+{
+  "configurations": [
+    {
+      "name": "Python: Make SDXL latent dataset",
+      "type": "python",
+      "request": "launch",
+      "module": "script.make_sdxl_latent_dataset",
+      "justMyCode": false
+    }
+  ]
+}
