@@ -10,24 +10,31 @@ from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
 from torchvision.utils import save_image
 import math
-from typing import Dict, Any, Iterator, Optional, Callable, TypedDict, List, NamedTuple
+from typing import Dict, Any, Iterator, Optional, Callable, TypedDict, List, NamedTuple, Union
 from pathlib import Path
 from welford_torch import Welford
 from tqdm import tqdm
 from os import makedirs
 from contextlib import nullcontext
 from PIL import Image
+from dataclasses import dataclass, field
 
 from sdxl_diff_dec.vae.attn.natten_attn_processor import NattenAttnProcessor
 from sdxl_diff_dec.vae.attn.null_attn_processor import NullAttnProcessor
 from sdxl_diff_dec.vae.attn.qkv_fusion import fuse_vae_qkv
+from sdxl_diff_dec.dataset.folder_of_images import FolderOfImages
 
 SinkOutput = TypedDict('SinkOutput', {
   '__key__': str,
   'img.png': Image.Image,
   'latent.pth': FloatTensor,
+})
+
+HasClassTxt = TypedDict('HasClassTxt', {
   'cls.txt': str,
 })
+
+class ClassySinkOutput(SinkOutput, HasClassTxt): pass
 
 class LabeledImg(NamedTuple):
   orig_img: Image.Image
@@ -43,42 +50,57 @@ class LabeledImgAndOrigBatch(NamedTuple):
   img_t: FloatTensor
   classes: IntTensor
 
-class CustomImageFolderDataset(torch.utils.data.Dataset):
-  def __init__(self, root: str, transform: Optional[Callable[[Image.Image], Image.Image]]=None):
-    self.dataset = datasets.ImageFolder(root, transform=None)
-    self.transform = transform
-    self.to_tensor = transforms.ToTensor()
+class ImgAndOrig(NamedTuple):
+  pil_img: Image.Image
+  img_t: FloatTensor
+
+class ImgAndOrigBatch(NamedTuple):
+  pil_imgs: List[Image.Image]
+  img_t: FloatTensor
+
+@dataclass
+class ClassyImageDatasetWithOrig(torch.utils.data.Dataset):
+  dataset: datasets.ImageFolder
+  transform: Optional[Callable[[Image.Image], Image.Image]] = field(default=None)
+  to_tensor: transforms.ToTensor = field(init=False, default_factory=transforms.ToTensor)
 
   def __getitem__(self, index: int) -> LabeledImgAndOrig:
-    # Load the original PIL image
-    labeled_img: LabeledImg = self.dataset[index]
-    pil_img, cls = labeled_img
-
-    # Apply the specified transformations to the original image
+    item: LabeledImg = self.dataset[index]
+    pil_img, cls = item
     pil_img: Image.Image = pil_img if self.transform is None else self.transform(pil_img)
-
-    # Convert the PIL image to a tensor
     img_t: FloatTensor = self.to_tensor(pil_img)
-
-    # Return both the original PIL image and the tensor
     return LabeledImgAndOrig(pil_img, img_t, cls)
 
   def __len__(self):
     return len(self.dataset)
 
-def custom_collate(batch: List[LabeledImgAndOrig]) -> LabeledImgAndOrigBatch:
-  """
-  Custom collate function to handle PIL Images and tensors in the dataset.
-  """
+@dataclass
+class ImageDatasetWithOrig(torch.utils.data.Dataset):
+  dataset: FolderOfImages
+  transform: Optional[Callable[[Image.Image], Image.Image]] = field(default=None)
+  to_tensor: transforms.ToTensor = field(init=False, default_factory=transforms.ToTensor)
+
+  def __getitem__(self, index: int) -> ImgAndOrig:
+    pil_img: Image.Image = self.dataset[index]
+    pil_img: Image.Image = pil_img if self.transform is None else self.transform(pil_img)
+    img_t: FloatTensor = self.to_tensor(pil_img)
+    return ImgAndOrig(pil_img, img_t)
+
+  def __len__(self):
+    return len(self.dataset)
+
+def custom_collate_classy(batch: List[LabeledImgAndOrig]) -> LabeledImgAndOrigBatch:
   transposed = list(zip(*batch))
   pil_imgs, img_t, labels = transposed
-
-  # Use the default collate for tensors
   img_t = torch.utils.data.dataloader.default_collate(img_t)
   labels = torch.utils.data.dataloader.default_collate(labels)
-
-  # Return a tuple of the collated tensor batch and the list of PIL Images
   return LabeledImgAndOrigBatch(pil_imgs, img_t, labels)
+
+def custom_collate(batch: List[ImgAndOrig]) -> ImgAndOrigBatch:
+  transposed = list(zip(*batch))
+  pil_imgs, img_t = transposed
+  img_t = torch.utils.data.dataloader.default_collate(img_t)
+  return ImgAndOrigBatch(pil_imgs, img_t)
 
 def ensure_distributed():
   if not dist.is_initialized():
@@ -105,6 +127,8 @@ def main():
                   help="use Ollin's fp16 finetune of SDXL 0.9 VAE")
   p.add_argument('--compile', action='store_true',
                   help="accelerate VAE with torch.compile()")
+  p.add_argument('--has-class-dirs', action='store_true',
+                  help="use torchvision.datasets.ImageFolder to traverse an image folder dataset which has class subdirectoriees")
   p.add_argument('--start-method', type=str, default='fork',
                   choices=['fork', 'forkserver', 'spawn'],
                   help='the multiprocessing start method')
@@ -124,6 +148,7 @@ def main():
 
   accelerator = accelerate.Accelerator()
   ensure_distributed()
+  assert accelerator.num_processes == 1, "I just noticed that this won't work multi-process because you can't gather a List[Image.Image]. the workaround would be to gather the original images as tensors, but then the main process would be forced to either write original images uncompressed into the wds, or re-encode the images to PNG for writing into dataset. probably simplest recourse is just to run single-GPU."
 
   if args.seed is not None:
     seeds = torch.randint(-2 ** 63, 2 ** 63 - 1, [accelerator.num_processes], generator=torch.Generator().manual_seed(args.seed))
@@ -136,11 +161,14 @@ def main():
       transforms.CenterCrop(args.side_length),
     ]
   )
-  dataset = CustomImageFolderDataset(args.in_dir, transform=tf)
+  inner_dataset: Union[datasets.ImageFolder, FolderOfImages] = datasets.ImageFolder(args.in_dir) if args.has_class_dirs else FolderOfImages(args.in_dir)
+
+  dataset = ClassyImageDatasetWithOrig(inner_dataset, transform=tf) if args.has_class_dirs else ImageDatasetWithOrig(inner_dataset, transform=tf)
   dataset_len: int = len(dataset)
   batches_estimate: int = math.ceil(dataset_len/(args.batch_size*accelerator.num_processes))
 
-  dl = DataLoader(dataset, args.batch_size, shuffle=False, drop_last=False, num_workers=args.num_workers, persistent_workers=True, pin_memory=True, collate_fn=custom_collate)
+  collate_fn = custom_collate_classy if args.has_class_dirs else custom_collate
+  dl = DataLoader(dataset, args.batch_size, shuffle=False, drop_last=False, num_workers=args.num_workers, persistent_workers=True, pin_memory=True, collate_fn=collate_fn)
 
   vae_kwargs: Dict[str, Any] = {
     'torch_dtype': torch.float16,
@@ -191,25 +219,47 @@ def main():
     sink_ctx = ShardWriter(f'{wds_out_dir}/%05d.tar', maxcount=10000)
     w_val = Welford(device=accelerator.device)
     w_sq = Welford(device=accelerator.device)
-    def sink_sample(sink: ShardWriter, ix: int, pil_img: Image.Image, latent: FloatTensor, cls: int) -> None:
+    def make_base_sample(ix: int, pil_img: Image.Image, latent: FloatTensor) -> SinkOutput:
       out: SinkOutput = {
         '__key__': str(ix),
         'img.png': pil_img,
         'latent.pth': latent,
-        'cls.txt': str(cls),
       }
+      return out
+    if args.has_class_dirs:
+      def make_classy_sample(base: SinkOutput, cls: int) -> ClassySinkOutput:
+        return {
+          **base,
+          '__key__': f'{cls}/{base["__key__"]}',
+          'cls.txt': str(cls),
+        }
+      def make_sample(ix: int, pil_img: Image.Image, latent: FloatTensor, cls: Optional[int]) -> ClassySinkOutput:
+        base: SinkOutput = make_base_sample(ix, pil_img, latent)
+        classy: ClassySinkOutput = make_classy_sample(base, cls)
+        return classy
+    else:
+      make_sample: Callable[[int, Image.Image, FloatTensor, int], SinkOutput] = lambda ix, pil_img, latent, _: make_base_sample(ix, pil_img, latent)
+
+    def sink_sample(sink: ShardWriter, ix: int, pil_img: Image.Image, latent: FloatTensor, cls: Optional[int]) -> None:
+      out: Union[SinkOutput, ClassySinkOutput] = make_sample(ix, pil_img, latent, cls)
       sink.write(out)
   else:
     sink_ctx = nullcontext()
-    sink_sample: Callable[[Optional[ShardWriter], int, Image.Image, FloatTensor, int], None] = lambda *_: ...
+    sink_sample: Callable[[Optional[ShardWriter], int, Image.Image, FloatTensor, Optional[int]], None] = lambda *_: ...
     w_val: Optional[Welford] = None
     w_sq: Optional[Welford] = None
 
   samples_output = 0
-  it: Iterator[LabeledImgAndOrigBatch] = iter(dl)
+  it: Iterator[Union[LabeledImgAndOrigBatch, ImgAndOrigBatch]] = iter(dl)
   with sink_ctx as sink:
     for batch_ix, batch in enumerate(tqdm(it, total=batches_estimate)):
-      pil_imgs, img_t, classes = batch
+      if isinstance(batch, LabeledImgAndOrigBatch):
+        pil_imgs, img_t, classes = batch
+      elif isinstance(batch, ImgAndOrigBatch):
+        pil_imgs, img_t = batch
+        classes: Optional[IntTensor] = None
+      else:
+        raise ValueError('batch was neither LabeledImgAndOrigBatch nor ImgAndOrigBatch')
       img_t = img_t.to(vae.dtype)
 
       # for sample_ix, sample in enumerate(img_t.unbind()):
@@ -250,15 +300,21 @@ def main():
           torch.save(w_sq.mean,  f'{avg_out_dir}/sq.pt')
         del per_channel_val_mean, per_channel_sq_mean
 
-      all_classes: FloatTensor = accelerator.gather(classes)
-      for sample_ix_in_batch, (pil_img, latent, cls) in enumerate(zip(pil_imgs, all_latents.unbind(), all_classes.unbind())):
+      if isinstance(batch, LabeledImgAndOrigBatch):
+        all_classes: FloatTensor = accelerator.gather(classes)
+        classes_unbound: List[FloatTensor] = all_classes.unbind()
+      else:
+        all_classes: Optional[FloatTensor] = None
+        classes_unbound: List[Optional[FloatTensor]] = [None]*all_latents.shape[0]
+      for sample_ix_in_batch, (pil_img, latent, cls) in enumerate(zip(pil_imgs, all_latents.unbind(), classes_unbound)):
         sample_ix_in_corpus: int = batch_ix * args.batch_size * accelerator.num_processes + sample_ix_in_batch
         if sample_ix_in_corpus >= dataset_len:
           break
+        cls_item: Optional[int] = None if cls is None else cls.item()
         # it's crucial to transfer the _sample_ to CPU, not the batch. otherwise each sample we serialize, has the whole batch's data hanging off it
-        sink_sample(sink, sample_ix_in_corpus, pil_img, latent.cpu(), cls.item())
+        sink_sample(sink, sample_ix_in_corpus, pil_img, latent.cpu(), cls_item)
         samples_output += 1
-      del all_latents, latents, all_classes, classes
+      del all_latents, latents, all_classes, classes, classes_unbound
   print(f"r{accelerator.process_index} done")
   if accelerator.is_main_process:
     print(f'Output {samples_output} samples. We wanted {dataset_len}.')

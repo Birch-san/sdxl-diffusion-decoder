@@ -1,7 +1,7 @@
 {
   "configurations": [
     {
-      "name": "Python: Make SDXL latent dataset",
+      "name": "Python: Make SDXL latent dataset (artbench)",
       "type": "python",
       "request": "launch",
       "module": "script.make_sdxl_latent_dataset",
@@ -9,6 +9,20 @@
       "args": [
         "--in-dir", "/sdb/ml-data/artbench/artbench-10-imagefolder-split/train",
         "--batch-size", "128",
+        "--has-class-dirs",
+        "--compile",
+        "--use-ollin-vae"
+      ]
+    },
+    {
+      "name": "Python: Make SDXL latent dataset (FFHQ)",
+      "type": "python",
+      "request": "launch",
+      "module": "script.make_sdxl_latent_dataset",
+      "justMyCode": false,
+      "args": [
+        "--in-dir", "/sdb/ml-data/ffhq/images1024x1024",
+        "--batch-size", "8",
         "--compile",
         "--use-ollin-vae"
       ]
