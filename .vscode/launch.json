@@ -26,6 +26,22 @@
         "--compile",
         "--use-ollin-vae"
       ]
+    },
+    {
+      "name": "Python: Check latent dataset for NaN",
+      "type": "python",
+      "request": "launch",
+      "module": "script.check_wds_for_nan",
+      "justMyCode": false,
+      "subProcess": false,
+      "args": [
+        "--in-pattern", "/sdb/ml-data/ffhq/latents/wds/{00000..00035}.tar",
+        // "--in-pattern", "/sdb/ml-data/artbench/latents/train/wds/{00000..00004}.tar",
+        // "--in-pattern", "/sdb/ml-data/artbench/latents/test/wds/00000.tar",
+        "--dataset-len", "70000",
+        "--batch-size", "512",
+        "--num-workers", "8"
+      ]
     }
   ]
 }
