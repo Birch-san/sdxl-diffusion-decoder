@@ -5,17 +5,18 @@ from diffusers.models.autoencoder_kl import AutoencoderKLOutput
 from diffusers.models.vae import DiagonalGaussianDistribution
 import torch
 from torch import distributed as dist, multiprocessing as mp
-from torch import FloatTensor, Tensor, inference_mode
+from torch import FloatTensor, IntTensor, inference_mode
 from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
 from torchvision.utils import save_image
 import math
-from typing import Dict, Any, Iterator, Optional, Callable, TypedDict, List
+from typing import Dict, Any, Iterator, Optional, Callable, TypedDict, List, NamedTuple
 from pathlib import Path
 from welford_torch import Welford
 from tqdm import tqdm
 from os import makedirs
 from contextlib import nullcontext
+from PIL import Image
 
 from sdxl_diff_dec.vae.attn.natten_attn_processor import NattenAttnProcessor
 from sdxl_diff_dec.vae.attn.null_attn_processor import NullAttnProcessor
@@ -23,9 +24,61 @@ from sdxl_diff_dec.vae.attn.qkv_fusion import fuse_vae_qkv
 
 SinkOutput = TypedDict('SinkOutput', {
   '__key__': str,
+  'img.png': Image.Image,
   'latent.pth': FloatTensor,
   'cls.txt': str,
 })
+
+class LabeledImg(NamedTuple):
+  orig_img: Image.Image
+  cls: int
+
+class LabeledImgAndOrig(NamedTuple):
+  pil_img: Image.Image
+  img_t: FloatTensor
+  cls: int
+
+class LabeledImgAndOrigBatch(NamedTuple):
+  pil_imgs: List[Image.Image]
+  img_t: FloatTensor
+  classes: IntTensor
+
+class CustomImageFolderDataset(torch.utils.data.Dataset):
+  def __init__(self, root: str, transform: Optional[Callable[[Image.Image], Image.Image]]=None):
+    self.dataset = datasets.ImageFolder(root, transform=None)
+    self.transform = transform
+    self.to_tensor = transforms.ToTensor()
+
+  def __getitem__(self, index: int) -> LabeledImgAndOrig:
+    # Load the original PIL image
+    labeled_img: LabeledImg = self.dataset[index]
+    pil_img, cls = labeled_img
+
+    # Apply the specified transformations to the original image
+    pil_img: Image.Image = pil_img if self.transform is None else self.transform(pil_img)
+
+    # Convert the PIL image to a tensor
+    img_t: FloatTensor = self.to_tensor(pil_img)
+
+    # Return both the original PIL image and the tensor
+    return LabeledImgAndOrig(pil_img, img_t, cls)
+
+  def __len__(self):
+    return len(self.dataset)
+
+def custom_collate(batch: List[LabeledImgAndOrig]) -> LabeledImgAndOrigBatch:
+  """
+  Custom collate function to handle PIL Images and tensors in the dataset.
+  """
+  transposed = list(zip(*batch))
+  pil_imgs, img_t, labels = transposed
+
+  # Use the default collate for tensors
+  img_t = torch.utils.data.dataloader.default_collate(img_t)
+  labels = torch.utils.data.dataloader.default_collate(labels)
+
+  # Return a tuple of the collated tensor batch and the list of PIL Images
+  return LabeledImgAndOrigBatch(pil_imgs, img_t, labels)
 
 def ensure_distributed():
   if not dist.is_initialized():
@@ -77,19 +130,17 @@ def main():
     torch.manual_seed(seeds[accelerator.process_index])
   latent_gen = torch.Generator().manual_seed(torch.randint(-2 ** 63, 2 ** 63 - 1, ()).item())
 
-  to_tensor = transforms.ToTensor()
-  tf = to_tensor if args.side_length is None else transforms.Compose(
+  tf = None if args.side_length is None else transforms.Compose(
     [
       transforms.Resize(args.side_length, interpolation=transforms.InterpolationMode.BICUBIC, antialias=True),
       transforms.CenterCrop(args.side_length),
-      to_tensor,
     ]
   )
-  dataset = datasets.ImageFolder(args.in_dir, transform=tf)
+  dataset = CustomImageFolderDataset(args.in_dir, transform=tf)
   dataset_len: int = len(dataset)
   batches_estimate: int = math.ceil(dataset_len/(args.batch_size*accelerator.num_processes))
 
-  dl = DataLoader(dataset, args.batch_size, shuffle=False, drop_last=False, num_workers=args.num_workers, persistent_workers=True, pin_memory=True)
+  dl = DataLoader(dataset, args.batch_size, shuffle=False, drop_last=False, num_workers=args.num_workers, persistent_workers=True, pin_memory=True, collate_fn=custom_collate)
 
   vae_kwargs: Dict[str, Any] = {
     'torch_dtype': torch.float16,
@@ -140,37 +191,35 @@ def main():
     sink_ctx = ShardWriter(f'{wds_out_dir}/%05d.tar', maxcount=10000)
     w_val = Welford(device=accelerator.device)
     w_sq = Welford(device=accelerator.device)
-    def sink_sample(sink: ShardWriter, ix: int, latent: FloatTensor, cls: int) -> None:
+    def sink_sample(sink: ShardWriter, ix: int, pil_img: Image.Image, latent: FloatTensor, cls: int) -> None:
       out: SinkOutput = {
         '__key__': str(ix),
+        'img.png': pil_img,
         'latent.pth': latent,
         'cls.txt': str(cls),
       }
       sink.write(out)
   else:
     sink_ctx = nullcontext()
-    sink_sample: Callable[[Optional[ShardWriter], int, FloatTensor, int], None] = lambda *_: ...
+    sink_sample: Callable[[Optional[ShardWriter], int, Image.Image, FloatTensor, int], None] = lambda *_: ...
     w_val: Optional[Welford] = None
     w_sq: Optional[Welford] = None
 
   samples_output = 0
-  it: Iterator[List[Tensor]] = iter(dl)
+  it: Iterator[LabeledImgAndOrigBatch] = iter(dl)
   with sink_ctx as sink:
     for batch_ix, batch in enumerate(tqdm(it, total=batches_estimate)):
-      assert isinstance(batch, list)
-      if isinstance(batch, list):
-          assert len(batch) == 2, "batch item was not the expected length of 2. perhaps class labels are missing. use dataset type imagefolder-class or wds-class, to get class labels."
-      images, classes = batch
-      images = images.to(vae.dtype)
+      pil_imgs, img_t, classes = batch
+      img_t = img_t.to(vae.dtype)
 
-      # for sample_ix, sample in enumerate(images.unbind()):
+      # for sample_ix, sample in enumerate(img_t.unbind()):
       #   save_image(sample.unsqueeze(0), f'out/vae-decode-test/b{batch_ix}_s{sample_ix}.orig.png')
 
       # transform pipeline's ToTensor() gave us [0, 1]
       # but VAE wants [-1, 1]
-      images.mul_(2).sub_(1)
+      img_t.mul_(2).sub_(1)
       with inference_mode():
-        encoded: AutoencoderKLOutput = vae.encode(images)
+        encoded: AutoencoderKLOutput = vae.encode(img_t)
       dist: DiagonalGaussianDistribution = encoded.latent_dist
       latents: FloatTensor = dist.sample(generator=latent_gen)
       all_latents: FloatTensor = accelerator.gather(latents)
@@ -202,12 +251,12 @@ def main():
         del per_channel_val_mean, per_channel_sq_mean
 
       all_classes: FloatTensor = accelerator.gather(classes)
-      for sample_ix_in_batch, (latent, cls) in enumerate(zip(all_latents.unbind(), all_classes.unbind())):
+      for sample_ix_in_batch, (pil_img, latent, cls) in enumerate(zip(pil_imgs, all_latents.unbind(), all_classes.unbind())):
         sample_ix_in_corpus: int = batch_ix * args.batch_size * accelerator.num_processes + sample_ix_in_batch
         if sample_ix_in_corpus >= dataset_len:
           break
         # it's crucial to transfer the _sample_ to CPU, not the batch. otherwise each sample we serialize, has the whole batch's data hanging off it
-        sink_sample(sink, sample_ix_in_corpus, latent.cpu(), cls.item())
+        sink_sample(sink, sample_ix_in_corpus, pil_img, latent.cpu(), cls.item())
         samples_output += 1
       del all_latents, latents, all_classes, classes
   print(f"r{accelerator.process_index} done")

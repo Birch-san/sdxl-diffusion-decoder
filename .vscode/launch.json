@@ -8,7 +8,7 @@
       "justMyCode": false,
       "args": [
         "--in-dir", "/sdb/ml-data/artbench/artbench-10-imagefolder-split/train",
-        "--batch-size", "4",
+        "--batch-size", "128",
         "--compile",
         "--use-ollin-vae"
       ]
