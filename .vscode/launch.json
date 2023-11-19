@@ -42,6 +42,16 @@
         "--batch-size", "512",
         "--num-workers", "8"
       ]
+    },
+    {
+      "name": "Python: Inference diffusion decoder",
+      "type": "python",
+      "request": "launch",
+      "module": "script.inference_decoder",
+      "justMyCode": false,
+      "subProcess": false,
+      "args": [
+      ]
     }
   ]
 }
