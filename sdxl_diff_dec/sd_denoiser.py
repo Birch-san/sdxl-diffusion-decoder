@@ -18,6 +18,12 @@ class SDDecoder(DiffusersDenoiser):
     channel_means: List[float] = [0.38862467, 0.02253063, 0.07381133, -0.0171294]
     channel_stds: List[float] = [0.9654121, 1.0440036, 0.76147926, 0.77022034]
     self.normalize = Normalize(channel_means, channel_stds)
+
+    total_timesteps=1024
+    n_distilled_steps=64
+    space: int = total_timesteps//n_distilled_steps
+    timesteps: LongTensor = torch.arange(0, 1024, device=unet.device)
+    rounded_timesteps: LongTensor = ((timesteps//space)+1).clamp_max(n_distilled_steps-1)*space
   
   def get_eps(self, sample: FloatTensor, timestep: LongTensor, latents: FloatTensor) -> FloatTensor:
     return super().__init__(sample, timestep)

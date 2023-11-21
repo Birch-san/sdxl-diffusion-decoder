@@ -6,3 +6,4 @@ diffusers
 webdataset
 einops
 k-diffusion
+consistencydecoder @ git+https://github.com/openai/consistencydecoder.git

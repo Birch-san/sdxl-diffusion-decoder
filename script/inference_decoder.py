@@ -5,15 +5,19 @@ from diffusers import ConsistencyDecoderVAE
 from diffusers.models.autoencoder_kl import AutoencoderKL, AutoencoderKLOutput
 from diffusers.models.vae import DiagonalGaussianDistribution, DecoderOutput
 from k_diffusion.sampling import sample_euler_ancestral
+from typing import Literal
 
 from sdxl_diff_dec.sd_denoiser import SDDecoder
+
+impl: Literal['diffusers-gan', 'diffusers-diffusion', 'kdiff-diffusion', 'openai-diffusion'] = 'openai-diffusion'
 
 device = torch.device('cuda')
 vae_sd: AutoencoderKL = AutoencoderKL.from_pretrained(
   'stabilityai/sd-vae-ft-mse',
   torch_dtype=torch.float16,
 )
-del vae_sd.decoder
+if impl != 'diffusers-gan':
+  del vae_sd.decoder
 vae_sd.to(device).eval()
 
 in_img_path = 'in/5.jpg'
@@ -29,20 +33,24 @@ with inference_mode():
 enc_latent_dist: DiagonalGaussianDistribution = encoded.latent_dist
 enc_latents: FloatTensor = enc_latent_dist.sample(generator=rng)
 
-del vae_sd
-decoder: ConsistencyDecoderVAE = ConsistencyDecoderVAE.from_pretrained(
-  'openai/consistency-decoder',
-  variant='fp16',
-  torch_dtype=torch.float16,
-).to(device).eval()
+if impl != 'diffusers-gan':
+  del vae_sd
+if impl in ['diffusers-diffusion', 'kdiff-diffusion']:
+  decoder: ConsistencyDecoderVAE = ConsistencyDecoderVAE.from_pretrained(
+    'openai/consistency-decoder',
+    variant='fp16',
+    torch_dtype=torch.float16,
+  ).to(device).eval()
+elif impl == 'openai-diffusion':
+  from consistencydecoder import ConsistencyDecoder
+  decoder = ConsistencyDecoder(device=device)
 
-denoiser = SDDecoder(decoder.decoder_unet, dtype=torch.float32)
-
-use_kdiff = True
+if impl == 'kdiff-diffusion':
+  denoiser = SDDecoder(decoder.decoder_unet, dtype=torch.float32)
 
 # with autocast(dtype=torch.bfloat16):
 with inference_mode():
-  if use_kdiff:
+  if impl == 'kdiff-diffusion':
     vae_scale_factor: int = 1 << (len(decoder.config.block_out_channels) - 1)
     noise = torch.randn(
       (1, 3, vae_scale_factor*enc_latents.shape[-2], vae_scale_factor*enc_latents.shape[-1]),
@@ -51,7 +59,11 @@ with inference_mode():
     sigmas: FloatTensor = denoiser.get_sigmas(2)
     noise.mul_(sigmas[0])
 
+    # decrease variance of latents to make them more like a standard Gaussian
+    enc_latents.mul_(vae_sd.config.scaling_factor)
+    # per-channel scale-and-shift to be *even more* like a standard Gaussian
     denoiser.normalize.forward_(enc_latents)
+
     extra_args={'latents': enc_latents}
     sample: FloatTensor = sample_euler_ancestral(denoiser, noise, sigmas, extra_args=extra_args)
   else:
