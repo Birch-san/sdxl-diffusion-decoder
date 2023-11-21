@@ -5,3 +5,4 @@ welford-torch
 diffusers
 webdataset
 einops
+k-diffusion
