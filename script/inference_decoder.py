@@ -98,7 +98,7 @@ with inference_mode():
     noise.mul_(sigmas[0])
 
     # decrease variance of latents to make them more like a standard Gaussian
-    enc_latents.mul_(vae_sd.config.scaling_factor)
+    # enc_latents.mul_(vae_sd.config.scaling_factor)
     # per-channel scale-and-shift to be *even more* like a standard Gaussian
     denoiser.normalize.forward_(enc_latents)
 
