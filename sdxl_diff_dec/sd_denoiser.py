@@ -30,4 +30,4 @@ class SDDecoder(DiffusersDenoiser):
     rounded_timesteps: LongTensor = ((timesteps//space)+1).clamp_max(n_distilled_steps-1)*space
   
   def get_eps(self, sample: FloatTensor, timestep: LongTensor, latents: FloatTensor) -> FloatTensor:
-    return super().__init__(sample, timestep)
+    return super().get_eps(sample, timestep)
