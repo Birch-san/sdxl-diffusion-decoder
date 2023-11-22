@@ -105,6 +105,7 @@ with inference_mode():
     extra_args={'latents': enc_latents}
     sample: FloatTensor = sample_euler_ancestral(denoiser, noise, sigmas, extra_args=extra_args)
   elif impl == 'openai-diffusion':
+    torch.manual_seed(seed)
     sample: FloatTensor = openai_decoder.__call__(enc_latents)
   elif impl == 'diffusers-diffusion':
     decoded: DecoderOutput = cdecoder.decode(enc_latents)
