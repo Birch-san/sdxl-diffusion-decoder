@@ -20,5 +20,3 @@ def betas_for_alpha_bar(
 
 def get_alphas(betas: FloatTensor) -> FloatTensor:
   return 1.0 - betas
-
-alphas_cumprod: FloatTensor = alphas.cumprod(dim=0)

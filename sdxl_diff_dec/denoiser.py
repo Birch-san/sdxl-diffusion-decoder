@@ -1,5 +1,6 @@
 from k_diffusion.external import DiscreteEpsDDPMDenoiser
-from diffusers import UNet2DConditionModel, UNet2DConditionOutput
+from diffusers import UNet2DConditionModel
+from diffusers.models.unet_2d_condition import UNet2DConditionOutput
 from torch import FloatTensor, LongTensor
 import torch
 
