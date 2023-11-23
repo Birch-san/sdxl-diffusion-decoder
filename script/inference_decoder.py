@@ -1,5 +1,6 @@
 import torch
 from torch import inference_mode, FloatTensor, ByteTensor
+import torch.nn.functional as F
 # from torch.cuda.amp import autocast
 from torchvision.io import read_image, write_png
 from os.path import isfile
@@ -89,18 +90,18 @@ rng = torch.Generator().manual_seed(seed)
 # with autocast(dtype=torch.bfloat16):
 with inference_mode():
   if impl == 'kdiff-diffusion':
-    vae_scale_factor: int = 1 << (len(cdecoder.config.block_out_channels) - 1)
-    noise = torch.randn(
-      (1, 3, vae_scale_factor*enc_latents.shape[-2], vae_scale_factor*enc_latents.shape[-1]),
-      generator=rng,
-    ).to(device)
-    sigmas: FloatTensor = denoiser.get_sigmas(2)
-    noise.mul_(sigmas[0])
-
     # decrease variance of latents to make them more like a standard Gaussian
     # enc_latents.mul_(vae_sd.config.scaling_factor)
     # per-channel scale-and-shift to be *even more* like a standard Gaussian
     denoiser.normalize.forward_(enc_latents)
+
+    vae_scale_factor: int = 1 << (len(cdecoder.config.block_out_channels) - 1)
+    enc_latents = F.interpolate(enc_latents, mode="nearest", scale_factor=vae_scale_factor)
+
+    B, _, H, W = enc_latents.shape
+    noise = torch.randn((B, 3, H, W), generator=rng).to(device)
+    sigmas: FloatTensor = denoiser.get_sigmas_rounded(n=3, include_sigma_min=False)
+    noise.mul_(sigmas[0])
 
     extra_args={'latents': enc_latents}
     sample: FloatTensor = sample_euler_ancestral(denoiser, noise, sigmas, extra_args=extra_args)
