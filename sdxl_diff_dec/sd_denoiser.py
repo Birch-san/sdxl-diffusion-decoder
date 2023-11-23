@@ -37,10 +37,9 @@ class SDDecoder(DiffusersDenoiser):
     self.rounded_log_sigmas = self.rounded_sigmas.log()
   
   def get_v(self, sample: FloatTensor, timestep: LongTensor, latents: FloatTensor) -> FloatTensor:
-    _, C, _, _ = sample.shape
     noise_and_latents: FloatTensor = cat([sample, latents], dim=1)
     out: FloatTensor = super().get_v(noise_and_latents, timestep)
-    out, _ = torch.split(out, C, dim=1)
+    out = out[:, :3, :, :]
     return out
 
   def get_sigmas_rounded(self, include_sigma_min=True, n=None) -> FloatTensor:
