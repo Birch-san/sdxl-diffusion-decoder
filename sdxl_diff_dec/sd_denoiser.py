@@ -29,5 +29,5 @@ class SDDecoder(DiffusersDenoiser):
     timesteps: LongTensor = torch.arange(0, 1024, device=unet.device)
     rounded_timesteps: LongTensor = ((timesteps//space)+1).clamp_max(n_distilled_steps-1)*space
   
-  def get_eps(self, sample: FloatTensor, timestep: LongTensor, latents: FloatTensor) -> FloatTensor:
-    return super().get_eps(sample, timestep)
+  def get_v(self, sample: FloatTensor, timestep: LongTensor, latents: FloatTensor) -> FloatTensor:
+    return super().get_v(sample, timestep)
