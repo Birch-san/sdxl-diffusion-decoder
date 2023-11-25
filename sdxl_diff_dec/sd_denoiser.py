@@ -1,45 +1,65 @@
-from diffusers import UNet2DConditionModel
+from k_diffusion.external import DiscreteVDDPMDenoiser
+from diffusers import UNet2DModel
+from diffusers.models.unet_2d import UNet2DOutput
 from torch import FloatTensor, LongTensor, cat
 import torch
-from typing import List
+from typing import Optional
 
-from .denoiser import DiffusersDenoiser
-from .schedule import betas_for_alpha_bar, alpha_bar, get_alphas
-from .normalize import Normalize
 from k_diffusion.sampling import append_zero
 
-class SDDecoder(DiffusersDenoiser):
-  normalize: Normalize
+class SDDecoder(DiscreteVDDPMDenoiser):
+  inner_model: UNet2DModel
   timesteps: LongTensor
+  sampling_dtype: torch.dtype
+  def __init__(
+    self,
+    unet: UNet2DModel,
+    alphas_cumprod: FloatTensor,
+    quantize=True,
+    dtype: torch.dtype = None,
+  ):
+    super().__init__(unet, alphas_cumprod, quantize=quantize)
+    self.sigma_data = .5
+    self.sampling_dtype = unet.dtype if dtype is None else dtype
+  
+  def get_v(self, noised_rgb: FloatTensor, timestep: LongTensor, latents: FloatTensor) -> FloatTensor:
+    noise_and_latents: FloatTensor = cat([noised_rgb, latents], dim=1).to(self.inner_model.dtype)
+    out: UNet2DOutput = self.inner_model.forward(
+      noise_and_latents,
+      timestep,
+    )
+    sample: FloatTensor = out.sample
+    # retain just the RGB output channels
+    sample = sample[:, :3, :, :]
+    return sample.to(self.sampling_dtype).neg()
+
+  def forward(self, input: FloatTensor, sigma: FloatTensor, **kwargs) -> FloatTensor:
+    nominal: FloatTensor = super().forward(input, sigma, **kwargs)
+    # OpenAI applies static thresholding after scaling
+    return nominal.clamp(-1, 1)
+
+class SDDecoderDistilled(SDDecoder):
   rounded_timesteps: LongTensor
   rounded_sigmas: FloatTensor
   rounded_log_sigmas: FloatTensor
-  def __init__(self, unet: UNet2DConditionModel, dtype: torch.dtype = None):
-    total_timesteps=1024
-    betas = betas_for_alpha_bar(total_timesteps, alpha_bar, device=unet.device)
-    alphas: FloatTensor = get_alphas(betas)
-    alphas_cumprod: FloatTensor = alphas.cumprod(dim=0)
-    super().__init__(unet, alphas_cumprod, dtype=dtype)
+  def __init__(
+    self,
+    unet: UNet2DModel,
+    alphas_cumprod: FloatTensor,
+    total_timesteps=1024,
+    n_distilled_steps=64,
+    quantize=True,
+    dtype: torch.dtype = None,
+  ):
+    super().__init__(unet, alphas_cumprod, quantize=quantize, dtype=dtype)
 
-    # divided by 0.18215, so we don't have to do that bizarre "standardize the wonky way, then scale-and-shift from there"
-    channel_means: List[float] = [2.1335418224334717, 0.12369272112846375, 0.4052227735519409, -0.09404008090496063],
-    channel_stds: List[float] = [5.300093650817871, 5.731559753417969, 4.180506229400635, 4.228494644165039],
-    self.normalize = Normalize(channel_means, channel_stds).to(unet.device)
-
-    n_distilled_steps=64
     space: int = total_timesteps//n_distilled_steps
     self.timesteps = torch.arange(0, total_timesteps, device=unet.device)
     self.rounded_timesteps = ((self.timesteps//space)+1).clamp_max(n_distilled_steps-1)*space
     self.rounded_sigmas = self.t_to_sigma(self.rounded_timesteps)
     self.rounded_log_sigmas = self.rounded_sigmas.log()
-  
-  def get_v(self, sample: FloatTensor, timestep: LongTensor, latents: FloatTensor) -> FloatTensor:
-    noise_and_latents: FloatTensor = cat([sample, latents], dim=1)
-    out: FloatTensor = super().get_v(noise_and_latents, timestep)
-    out = out[:, :3, :, :]
-    return out
 
-  def get_sigmas_rounded(self, include_sigma_min=True, n=None) -> FloatTensor:
+  def get_sigmas_rounded(self, include_sigma_min=True, n: Optional[int] = None) -> FloatTensor:
     if n is None:
       return append_zero(self.rounded_sigmas.flip(0))
     t_max: int = len(self.rounded_sigmas) - 1

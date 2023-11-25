@@ -1,7 +1,6 @@
 import torch
 from torch import inference_mode, FloatTensor, ByteTensor
 import torch.nn.functional as F
-# from torch.cuda.amp import autocast
 from torchvision.io import read_image, write_png
 from os.path import isfile
 from os import getenv, makedirs
@@ -11,9 +10,11 @@ from diffusers import ConsistencyDecoderVAE
 from diffusers.models.autoencoder_kl import AutoencoderKL, AutoencoderKLOutput
 from diffusers.models.vae import DiagonalGaussianDistribution, DecoderOutput
 from k_diffusion.sampling import sample_euler_ancestral
-from typing import Literal, Dict
+from typing import Literal, Dict, List
 
-from sdxl_diff_dec.sd_denoiser import SDDecoder
+from sdxl_diff_dec.sd_denoiser import SDDecoderDistilled
+from sdxl_diff_dec.normalize import Normalize
+from sdxl_diff_dec.schedule import betas_for_alpha_bar, alpha_bar, get_alphas
 
 seed = 42
 
@@ -83,17 +84,30 @@ elif impl == 'openai-diffusion':
   openai_decoder = ConsistencyDecoder(device=device, download_root=getenv('OPENAI_CACHE_DIR', '~/.cache/clip'))
 
 if impl == 'kdiff-diffusion':
-  denoiser = SDDecoder(cdecoder.decoder_unet, dtype=torch.float32)
+  total_timesteps=1024
+  betas = betas_for_alpha_bar(total_timesteps, alpha_bar, device=device)
+  alphas: FloatTensor = get_alphas(betas)
+  alphas_cumprod: FloatTensor = alphas.cumprod(dim=0)
+
+  denoiser = SDDecoderDistilled(
+    cdecoder.decoder_unet,
+    alphas_cumprod,
+    total_timesteps=total_timesteps,
+    n_distilled_steps=64,
+    dtype=torch.float32,
+  )
+
+  # divided by 0.18215, so we don't have to do OpenAI's bizarre "standardize the wonky way, then scale-and-shift from there"
+  channel_means: List[float] = [2.1335418224334717, 0.12369272112846375, 0.4052227735519409, -0.09404008090496063]
+  channel_stds: List[float] = [5.300093650817871, 5.731559753417969, 4.180506229400635, 4.228494644165039]
+  normalize = Normalize(channel_means, channel_stds).to(device)
 
 rng = torch.Generator().manual_seed(seed)
 
-# with autocast(dtype=torch.bfloat16):
 with inference_mode():
   if impl == 'kdiff-diffusion':
-    # decrease variance of latents to make them more like a standard Gaussian
-    # enc_latents.mul_(vae_sd.config.scaling_factor)
-    # per-channel scale-and-shift to be *even more* like a standard Gaussian
-    denoiser.normalize.forward_(enc_latents)
+    # scale-and-shift latents from VAE distribution to standard Gaussian
+    normalize.forward_(enc_latents)
 
     vae_scale_factor: int = 1 << (len(cdecoder.config.block_out_channels) - 1)
     enc_latents = F.interpolate(enc_latents, mode="nearest", scale_factor=vae_scale_factor)
@@ -106,7 +120,7 @@ with inference_mode():
     sample: FloatTensor = sample_euler_ancestral(denoiser, noise, sigmas, extra_args=extra_args)
   elif impl == 'openai-diffusion':
     torch.manual_seed(seed)
-    sample: FloatTensor = openai_decoder.__call__(enc_latents)
+    sample: FloatTensor = openai_decoder.__call__(enc_latents, generator=rng)
   elif impl == 'diffusers-diffusion':
     decoded: DecoderOutput = cdecoder.decode(enc_latents)
     sample: FloatTensor = decoded.sample
