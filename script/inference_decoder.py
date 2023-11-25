@@ -19,7 +19,7 @@ seed = 42
 
 device = torch.device('cuda')
 ImplType = Literal['diffusers-gan', 'diffusers-diffusion', 'kdiff-diffusion', 'openai-diffusion']
-impl: ImplType = 'diffusers-gan'
+impl: ImplType = 'kdiff-diffusion'
 
 out_qualifiers: Dict[ImplType, str] = {
   'diffusers-gan': 'diffgan',
@@ -102,7 +102,6 @@ with inference_mode():
     noise = torch.randn((B, 3, H, W), generator=rng).to(device)
     sigmas: FloatTensor = denoiser.get_sigmas_rounded(n=3, include_sigma_min=False)
     noise.mul_(sigmas[0])
-
     extra_args={'latents': enc_latents}
     sample: FloatTensor = sample_euler_ancestral(denoiser, noise, sigmas, extra_args=extra_args)
   elif impl == 'openai-diffusion':
