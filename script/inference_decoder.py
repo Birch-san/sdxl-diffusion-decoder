@@ -20,6 +20,7 @@ from sdxl_diff_dec.sampling import sample_consistency
 seed = 42
 
 device = torch.device('cuda')
+device_map={'': f'{device.type}:{device.index or 0}'}
 ImplType = Literal['diffusers-gan', 'diffusers-diffusion', 'kdiff-diffusion', 'openai-diffusion']
 impl: ImplType = 'kdiff-diffusion'
 # disabled because I'm not sure whether it's set up correctly
@@ -53,6 +54,7 @@ if impl == 'diffusers-gan' or not enc_latents_found:
   vae_sd: AutoencoderKL = AutoencoderKL.from_pretrained(
     'stabilityai/sd-vae-ft-mse',
     torch_dtype=torch.float16,
+    device_map=device_map,
   )
   if impl != 'diffusers-gan':
     del vae_sd.decoder
@@ -81,7 +83,8 @@ if impl in ['diffusers-diffusion', 'kdiff-diffusion']:
     'openai/consistency-decoder',
     variant='fp16',
     torch_dtype=torch.float16,
-  ).to(device).eval()
+    device_map=device_map,
+  ).eval()
 elif impl == 'openai-diffusion':
   from consistencydecoder import ConsistencyDecoder
   openai_decoder = ConsistencyDecoder(device=device, download_root=getenv('OPENAI_CACHE_DIR', '~/.cache/clip'))
