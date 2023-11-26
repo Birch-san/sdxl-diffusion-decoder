@@ -23,7 +23,7 @@ device = torch.device('cuda')
 device_map={'': f'{device.type}:{device.index or 0}'}
 ImplType = Literal['diffusers-gan', 'diffusers-diffusion', 'kdiff-diffusion', 'openai-diffusion']
 impl: ImplType = 'kdiff-diffusion'
-# disabled because I'm not sure whether it's set up correctly
+# disabled because I'm not sure whether it's set up optimally
 kdiff_use_brownian_tree = False
 
 out_qualifiers: Dict[ImplType, str] = {
