@@ -105,6 +105,7 @@ if impl == 'kdiff-diffusion':
   normalize = Normalize(channel_means, channel_stds).to(device)
 
 rng = torch.Generator().manual_seed(seed)
+steps = 2
 
 with inference_mode():
   if impl == 'kdiff-diffusion':
@@ -115,7 +116,8 @@ with inference_mode():
     enc_latents = F.interpolate(enc_latents, mode="nearest", scale_factor=vae_scale_factor)
 
     B, _, H, W = enc_latents.shape
-    sigmas: FloatTensor = denoiser.get_sigmas_rounded(n=3, include_sigma_min=False)
+    # note: seems to tolerate 2-step sampling, but something's definitely wrong with step counts higher than that.
+    sigmas: FloatTensor = denoiser.get_sigmas_rounded(n=steps+1, include_sigma_min=False)
     if kdiff_use_brownian_tree:
       # seems to be exhibiting odd artifacting. perhaps it's set up incorrectly.
       noise_sampler = BrownianTreeNoiseSampler(
@@ -134,9 +136,9 @@ with inference_mode():
     sample: FloatTensor = sample_euler_ancestral(denoiser, noise, sigmas, extra_args=extra_args, noise_sampler=noise_sampler)
   elif impl == 'openai-diffusion':
     torch.manual_seed(seed)
-    sample: FloatTensor = openai_decoder.__call__(enc_latents)
+    sample: FloatTensor = openai_decoder.__call__(enc_latents, schedule=torch.linspace(1, 0, steps+1)[:-1].tolist())
   elif impl == 'diffusers-diffusion':
-    decoded: DecoderOutput = cdecoder.decode(enc_latents, generator=rng)
+    decoded: DecoderOutput = cdecoder.decode(enc_latents, num_inference_steps=steps, generator=rng)
     sample: FloatTensor = decoded.sample
   elif impl == 'diffusers-gan':
     decoded: DecoderOutput = vae_sd.decode(enc_latents)
