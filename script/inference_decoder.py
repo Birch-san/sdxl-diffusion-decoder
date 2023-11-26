@@ -54,7 +54,6 @@ if impl == 'diffusers-gan' or not enc_latents_found:
   vae_sd: AutoencoderKL = AutoencoderKL.from_pretrained(
     'stabilityai/sd-vae-ft-mse',
     torch_dtype=torch.float16,
-    device_map=device_map,
   )
   if impl != 'diffusers-gan':
     del vae_sd.decoder
@@ -79,12 +78,13 @@ if not enc_latents_found:
     del vae_sd
 
 if impl in ['diffusers-diffusion', 'kdiff-diffusion']:
-  cdecoder: ConsistencyDecoderVAE = ConsistencyDecoderVAE.from_pretrained(
+  cvae: ConsistencyDecoderVAE = ConsistencyDecoderVAE.from_pretrained(
     'openai/consistency-decoder',
     variant='fp16',
     torch_dtype=torch.float16,
-    device_map=device_map,
-  ).eval()
+  )
+  del cvae.encoder
+  cvae.to(device).eval()
 elif impl == 'openai-diffusion':
   from consistencydecoder import ConsistencyDecoder
   openai_decoder = ConsistencyDecoder(device=device, download_root=getenv('OPENAI_CACHE_DIR', '~/.cache/clip'))
@@ -96,7 +96,7 @@ if impl == 'kdiff-diffusion':
   alphas_cumprod: FloatTensor = alphas.cumprod(dim=0)
 
   denoiser = SDDecoderDistilled(
-    cdecoder.decoder_unet,
+    cvae.decoder_unet,
     alphas_cumprod,
     total_timesteps=total_timesteps,
     n_distilled_steps=64,
@@ -116,7 +116,7 @@ with inference_mode():
     # scale-and-shift latents from VAE distribution to standard Gaussian
     normalize.forward_(enc_latents)
 
-    vae_scale_factor: int = 1 << (len(cdecoder.config.block_out_channels) - 1)
+    vae_scale_factor: int = 1 << (len(cvae.config.block_out_channels) - 1)
     enc_latents = F.interpolate(enc_latents, mode="nearest", scale_factor=vae_scale_factor)
 
     B, _, H, W = enc_latents.shape
@@ -143,7 +143,7 @@ with inference_mode():
     torch.manual_seed(seed)
     sample: FloatTensor = openai_decoder.__call__(enc_latents, schedule=torch.linspace(1, 0, steps+1)[:-1].tolist())
   elif impl == 'diffusers-diffusion':
-    decoded: DecoderOutput = cdecoder.decode(enc_latents, num_inference_steps=steps, generator=rng)
+    decoded: DecoderOutput = cvae.decode(enc_latents, num_inference_steps=steps, generator=rng)
     sample: FloatTensor = decoded.sample
   elif impl == 'diffusers-gan':
     decoded: DecoderOutput = vae_sd.decode(enc_latents)
