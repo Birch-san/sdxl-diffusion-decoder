@@ -22,7 +22,7 @@ seed = 42
 device = torch.device('cuda')
 ImplType = Literal['diffusers-gan', 'diffusers-diffusion', 'kdiff-diffusion', 'openai-diffusion']
 impl: ImplType = 'kdiff-diffusion'
-# disabled because it's encountering weird artifacting
+# disabled because I'm not sure whether it's set up correctly
 kdiff_use_brownian_tree = False
 
 out_qualifiers: Dict[ImplType, str] = {
@@ -117,10 +117,11 @@ with inference_mode():
     enc_latents = F.interpolate(enc_latents, mode="nearest", scale_factor=vae_scale_factor)
 
     B, _, H, W = enc_latents.shape
-    # note: seems to tolerate 2-step sampling, but something's definitely wrong with step counts higher than that.
     sigmas: FloatTensor = denoiser.get_sigmas_rounded(n=steps+1, include_sigma_min=False)
     if kdiff_use_brownian_tree:
-      # seems to be exhibiting odd artifacting. perhaps it's set up incorrectly.
+      # not sure if this is set up correctly
+      # - whether the sigma_min needs to be more terminal
+      # - whether the sigma_to_t transform is necessary
       noise_sampler = BrownianTreeNoiseSampler(
         torch.empty((B, 3, H, W), device=device),
         sigma_min=sigmas[-2],
