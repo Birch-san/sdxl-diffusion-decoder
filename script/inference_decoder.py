@@ -9,12 +9,13 @@ from pathlib import Path
 from diffusers import ConsistencyDecoderVAE
 from diffusers.models.autoencoder_kl import AutoencoderKL, AutoencoderKLOutput
 from diffusers.models.vae import DiagonalGaussianDistribution, DecoderOutput
-from k_diffusion.sampling import sample_euler_ancestral, BrownianTreeNoiseSampler
+from k_diffusion.sampling import BrownianTreeNoiseSampler
 from typing import Literal, Dict, List, Optional
 
 from sdxl_diff_dec.sd_denoiser import SDDecoderDistilled
 from sdxl_diff_dec.normalize import Normalize
 from sdxl_diff_dec.schedule import betas_for_alpha_bar, alpha_bar, get_alphas
+from sdxl_diff_dec.sampling import sample_consistency
 
 seed = 42
 
@@ -133,7 +134,7 @@ with inference_mode():
       noise_sampler: Optional[BrownianTreeNoiseSampler] = None
     noise.mul_(sigmas[0])
     extra_args={'latents': enc_latents}
-    sample: FloatTensor = sample_euler_ancestral(denoiser, noise, sigmas, extra_args=extra_args, noise_sampler=noise_sampler)
+    sample: FloatTensor = sample_consistency(denoiser, noise, sigmas, extra_args=extra_args, noise_sampler=noise_sampler)
   elif impl == 'openai-diffusion':
     torch.manual_seed(seed)
     sample: FloatTensor = openai_decoder.__call__(enc_latents, schedule=torch.linspace(1, 0, steps+1)[:-1].tolist())
