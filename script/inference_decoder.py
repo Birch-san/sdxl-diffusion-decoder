@@ -9,8 +9,8 @@ from pathlib import Path
 from diffusers import ConsistencyDecoderVAE
 from diffusers.models.autoencoder_kl import AutoencoderKL, AutoencoderKLOutput
 from diffusers.models.vae import DiagonalGaussianDistribution, DecoderOutput
-from k_diffusion.sampling import sample_euler_ancestral
-from typing import Literal, Dict, List
+from k_diffusion.sampling import sample_euler_ancestral, BrownianTreeNoiseSampler
+from typing import Literal, Dict, List, Optional
 
 from sdxl_diff_dec.sd_denoiser import SDDecoderDistilled
 from sdxl_diff_dec.normalize import Normalize
@@ -21,6 +21,8 @@ seed = 42
 device = torch.device('cuda')
 ImplType = Literal['diffusers-gan', 'diffusers-diffusion', 'kdiff-diffusion', 'openai-diffusion']
 impl: ImplType = 'kdiff-diffusion'
+# disabled because it's encountering weird artifacting
+kdiff_use_brownian_tree = False
 
 out_qualifiers: Dict[ImplType, str] = {
   'diffusers-gan': 'diffgan',
@@ -33,7 +35,7 @@ out_qualifier: str = out_qualifiers[impl]
 out_dir = Path('out')
 makedirs(out_dir, exist_ok=True)
 
-in_img_path = Path(f'in/5.jpg')
+in_img_path = Path(f'in/gt2.png')
 out_img_path: Path = out_dir / f'{in_img_path.stem}.{out_qualifier}.png'
 cached_enc_latents_path: Path = out_dir / f'{in_img_path.stem}.cache.pt'
 
@@ -56,7 +58,7 @@ if impl == 'diffusers-gan' or not enc_latents_found:
   vae_sd.to(device).eval()
 
 if not enc_latents_found:
-  in_img: ByteTensor = read_image(in_img_path).to(dtype=vae_sd.dtype, device=device)
+  in_img: ByteTensor = read_image(str(in_img_path)).to(dtype=vae_sd.dtype, device=device)
   in_img_norm: FloatTensor = (in_img/127.5)-1.
   del in_img
   # add batch dim
@@ -113,16 +115,28 @@ with inference_mode():
     enc_latents = F.interpolate(enc_latents, mode="nearest", scale_factor=vae_scale_factor)
 
     B, _, H, W = enc_latents.shape
-    noise = torch.randn((B, 3, H, W), generator=rng).to(device)
     sigmas: FloatTensor = denoiser.get_sigmas_rounded(n=3, include_sigma_min=False)
+    if kdiff_use_brownian_tree:
+      # seems to be exhibiting odd artifacting. perhaps it's set up incorrectly.
+      noise_sampler = BrownianTreeNoiseSampler(
+        torch.empty((B, 3, H, W), device=device),
+        sigma_min=sigmas[-2],
+        sigma_max=sigmas[0],
+        seed=seed,
+        transform=lambda sigma: denoiser.sigma_to_t(sigma),
+      )
+      noise: FloatTensor = noise_sampler(sigmas[0], sigmas[1])
+    else:
+      noise: FloatTensor = torch.randn((B, 3, H, W), generator=rng).to(device)
+      noise_sampler: Optional[BrownianTreeNoiseSampler] = None
     noise.mul_(sigmas[0])
     extra_args={'latents': enc_latents}
-    sample: FloatTensor = sample_euler_ancestral(denoiser, noise, sigmas, extra_args=extra_args)
+    sample: FloatTensor = sample_euler_ancestral(denoiser, noise, sigmas, extra_args=extra_args, noise_sampler=noise_sampler)
   elif impl == 'openai-diffusion':
     torch.manual_seed(seed)
-    sample: FloatTensor = openai_decoder.__call__(enc_latents, generator=rng)
+    sample: FloatTensor = openai_decoder.__call__(enc_latents)
   elif impl == 'diffusers-diffusion':
-    decoded: DecoderOutput = cdecoder.decode(enc_latents)
+    decoded: DecoderOutput = cdecoder.decode(enc_latents, generator=rng)
     sample: FloatTensor = decoded.sample
   elif impl == 'diffusers-gan':
     decoded: DecoderOutput = vae_sd.decode(enc_latents)
@@ -130,6 +144,7 @@ with inference_mode():
   else:
     raise ValueError(f'Unrecognised decoder implementation "{impl}"')
 write_png(sample.squeeze().clamp(-1, 1).add(1).mul(127.5).byte().cpu(), str(out_img_path))
+print(f'Saved {out_img_path}')
 pass
 
 # they take your encoded latents,
