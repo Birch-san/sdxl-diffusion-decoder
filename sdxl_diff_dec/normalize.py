@@ -6,10 +6,10 @@ from typing import Sequence
 class Normalize(Module):
   mean: FloatTensor
   std: FloatTensor
-  def __init__(self, mean: Sequence[float], std: Sequence[float]):
+  def __init__(self, mean: Sequence[float], std: Sequence[float], device=torch.device('cpu')):
     super().__init__()
-    self.register_buffer('mean', torch.as_tensor(mean).view(-1, 1, 1))
-    self.register_buffer('std', torch.as_tensor(std).view(-1, 1, 1))
+    self.register_buffer('mean', torch.as_tensor(mean, device=device).view(-1, 1, 1))
+    self.register_buffer('std', torch.as_tensor(std, device=device).view(-1, 1, 1))
 
   def forward(self, x: FloatTensor) -> FloatTensor:
     return (x - self.mean) / self.std

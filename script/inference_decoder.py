@@ -106,7 +106,7 @@ if impl == 'kdiff-diffusion':
   # divided by 0.18215, so we don't have to do OpenAI's bizarre "standardize the wonky way, then scale-and-shift from there"
   channel_means: List[float] = [2.1335418224334717, 0.12369272112846375, 0.4052227735519409, -0.09404008090496063]
   channel_stds: List[float] = [5.300093650817871, 5.731559753417969, 4.180506229400635, 4.228494644165039]
-  normalize = Normalize(channel_means, channel_stds).to(device)
+  normalize = Normalize(channel_means, channel_stds, device=device)
 
 rng = torch.Generator().manual_seed(seed)
 steps = 2
