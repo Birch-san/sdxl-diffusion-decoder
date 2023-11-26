@@ -149,18 +149,3 @@ with inference_mode():
     raise ValueError(f'Unrecognised decoder implementation "{impl}"')
 write_png(sample.squeeze().clamp(-1, 1).add(1).mul(127.5).byte().cpu(), str(out_img_path))
 print(f'Saved {out_img_path}')
-pass
-
-# they take your encoded latents,
-# assume you already scaled them, and undo it.
-# scale-and-shift,
-# 8x nearest-upsample,
-# draw 3-channel noise at the 8x size,
-# multiply the noise by
-#   self.decoder_scheduler.init_noise_sigma
-# which is 0.9997,
-# start sampling from timestep 1008,
-# whose self.c_in[timestep] is 1.002
-# c_in is a ramp from 2 to 1 in 1024 steps
-# they multiply the noise by that,
-# concat z onto it.
