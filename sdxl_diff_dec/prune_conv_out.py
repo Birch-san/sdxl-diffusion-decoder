@@ -4,7 +4,7 @@ from torch.nn import Conv2d
 def prune_conv_out(unet: UNet2DModel) -> None:
   '''
   Removes the 3 extraneous channels output by the SD consistency decoder UNet's final conv_out.
-  They were probably variacne or something, useful during training but not any more.
+  They were probably variance or something, useful during training but not any more.
   '''
   conv_out = unet.conv_out
   conv_out_lite = Conv2d(conv_out.in_channels, 3, kernel_size=conv_out.kernel_size, padding=conv_out.padding, device=conv_out.weight.device, dtype=conv_out.weight.dtype)
