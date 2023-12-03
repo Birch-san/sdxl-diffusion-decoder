@@ -92,7 +92,7 @@ if impl in ['diffusers-diffusion', 'kdiff-diffusion']:
   cvae.to(device).eval()
 elif impl == 'openai-diffusion':
   from consistencydecoder import ConsistencyDecoder
-  openai_decoder = ConsistencyDecoder(device=device, download_root=getenv('OPENAI_CACHE_DIR', '~/.cache/clip'))
+  openai_decoder = ConsistencyDecoder(device=device, download_root=getenv('OPENAI_CACHE_DIR', str(Path.home() / '.cache/clip')))
 
 if impl == 'kdiff-diffusion':
   total_timesteps=1024
