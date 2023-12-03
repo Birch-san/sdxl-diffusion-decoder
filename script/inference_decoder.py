@@ -16,6 +16,7 @@ from sdxl_diff_dec.sd_denoiser import SDDecoderDistilled
 from sdxl_diff_dec.normalize import Normalize
 from sdxl_diff_dec.schedule import betas_for_alpha_bar, alpha_bar, get_alphas
 from sdxl_diff_dec.sampling import sample_consistency
+from sdxl_diff_dec.prune_conv_out import prune_conv_out
 
 seed = 42
 
@@ -84,6 +85,10 @@ if impl in ['diffusers-diffusion', 'kdiff-diffusion']:
     torch_dtype=torch.float16,
   )
   del cvae.encoder
+
+  # prune away the unused channels
+  prune_conv_out(cvae.decoder_unet)
+
   cvae.to(device).eval()
 elif impl == 'openai-diffusion':
   from consistencydecoder import ConsistencyDecoder
